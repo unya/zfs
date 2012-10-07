@@ -2482,7 +2482,14 @@ zio_vdev_io_start(zio_t *zio)
 
 	align = 1ULL << vd->vdev_top->vdev_ashift;
 
-	if (P2PHASE(zio->io_size, align) != 0) {
+	/*
+	 * On Linux, we don't care about read alignment. The backing block
+	 * device driver will take care of that for us.
+	 * The only exception is raidz, which needs a full block for parity.
+	 */
+	if (P2PHASE(zio->io_size, align) != 0 &&
+	    (zio->io_type != ZIO_TYPE_READ ||
+	     vd->vdev_ops == &vdev_raidz_ops)) {
 		uint64_t asize = P2ROUNDUP(zio->io_size, align);
 		char *abuf = NULL;
 		if (zio->io_type == ZIO_TYPE_READ ||
