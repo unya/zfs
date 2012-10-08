@@ -421,8 +421,10 @@ trim_map_vdev_commit(spa_t *spa, zio_t *zio, vdev_t *vd)
 		list_remove(&tm->tm_head, ts);
 		avl_remove(&tm->tm_queued_frees, ts);
 		avl_add(&tm->tm_inflight_frees, ts);
+		mutex_exit(&tm->tm_lock);
 		zio_nowait(zio_trim(zio, spa, vd, ts->ts_start,
 		    ts->ts_end - ts->ts_start, 0));
+		mutex_enter(&tm->tm_lock);
 	}
 	mutex_exit(&tm->tm_lock);
 }
