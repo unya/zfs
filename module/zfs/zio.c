@@ -234,6 +234,7 @@ zio_init(void)
 		zio_trim_ksp->ks_data = &zio_trim_stats;
 		kstat_install(zio_trim_ksp);
 	}
+	lz4_init();
 }
 
 void
@@ -267,6 +268,7 @@ zio_fini(void)
 		kstat_delete(zio_trim_ksp);
 		zio_trim_ksp = NULL;
 	}
+	lz4_fini();
 }
 
 /*
