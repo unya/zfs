@@ -23,6 +23,7 @@
  * Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  * Rewritten for Linux by Brian Behlendorf <behlendorf1@llnl.gov>.
  * LLNL-CODE-403049.
+ * Copyright (c) 2013 by Delphix. All rights reserved.
  */
 
 #include <sys/zfs_context.h>
@@ -738,7 +739,7 @@ vdev_disk_io_start(zio_t *zio)
 	case ZIO_TYPE_IOCTL:
 
 		if (!vdev_readable(v)) {
-			zio->io_error = ENXIO;
+			zio->io_error = SET_ERROR(ENXIO);
 			return ZIO_PIPELINE_CONTINUE;
 		}
 
@@ -759,7 +760,7 @@ vdev_disk_io_start(zio_t *zio)
 				break;
 
 			if (v->vdev_nowritecache) {
-				zio->io_error = ENOTSUP;
+				zio->io_error = SET_ERROR(ENOTSUP);
 				break;
 			}
 
@@ -774,7 +775,7 @@ vdev_disk_io_start(zio_t *zio)
 			break;
 
 		default:
-			zio->io_error = ENOTSUP;
+			zio->io_error = SET_ERROR(ENOTSUP);
 		}
 
 		return ZIO_PIPELINE_CONTINUE;
@@ -788,7 +789,7 @@ vdev_disk_io_start(zio_t *zio)
 		break;
 
 	default:
-		zio->io_error = ENOTSUP;
+		zio->io_error = SET_ERROR(ENOTSUP);
 		return ZIO_PIPELINE_CONTINUE;
 	}
 
