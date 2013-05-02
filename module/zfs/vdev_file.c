@@ -25,6 +25,7 @@
 
 #include <sys/zfs_context.h>
 #include <sys/spa.h>
+#include <sys/spa_impl.h>
 #include <sys/vdev_file.h>
 #include <sys/vdev_impl.h>
 #include <sys/zio.h>
@@ -186,21 +187,39 @@ static void vdev_file_trim(zio_t *zio)
 		vd->vdev_notrim = B_TRUE;
 }
 
+static void
+vdev_file_io_strategy(void *arg)
+{
+	zio_t *zio = (zio_t *)arg;
+	vdev_t *vd = zio->io_vd;
+	vdev_file_t *vf = vd->vdev_tsd;
+	ssize_t resid;
+
+	zio->io_error = vn_rdwr(zio->io_type == ZIO_TYPE_READ ?
+	    UIO_READ : UIO_WRITE, vf->vf_vnode, zio->io_data,
+	    zio->io_size, zio->io_offset, UIO_SYSSPACE,
+	    0, RLIM64_INFINITY, kcred, &resid);
+
+	if (resid != 0 && zio->io_error == 0)
+		zio->io_error = ENOSPC;
+
+	zio_interrupt(zio);
+}
+
 static int
 vdev_file_io_start(zio_t *zio)
 {
+	spa_t *spa = zio->io_spa;
 	vdev_t *vd = zio->io_vd;
-	vdev_file_t *vf;
-	ssize_t resid = 0;
-
-	if (!vdev_readable(vd)) {
-		zio->io_error = ENXIO;
-		return (ZIO_PIPELINE_CONTINUE);
-	}
-
-	vf = vd->vdev_tsd;
+	vdev_file_t *vf = vd->vdev_tsd;
 
 	if (zio->io_type == ZIO_TYPE_IOCTL) {
+		/* XXPOLICY */
+		if (!vdev_readable(vd)) {
+			zio->io_error = ENXIO;
+			return (ZIO_PIPELINE_CONTINUE);
+		}
+
 		switch (zio->io_cmd) {
 		case DKIOCFLUSHWRITECACHE:
 			zio->io_error = VOP_FSYNC(vf->vf_vnode, FSYNC | FDSYNC,
@@ -216,15 +235,8 @@ vdev_file_io_start(zio_t *zio)
 		return (ZIO_PIPELINE_CONTINUE);
 	}
 
-	zio->io_error = vn_rdwr(zio->io_type == ZIO_TYPE_READ ?
-	    UIO_READ : UIO_WRITE, vf->vf_vnode, zio->io_data,
-	    zio->io_size, zio->io_offset, UIO_SYSSPACE,
-	    0, RLIM64_INFINITY, kcred, &resid);
-
-	if (resid != 0 && zio->io_error == 0)
-		zio->io_error = ENOSPC;
-
-	zio_interrupt(zio);
+	taskq_dispatch_ent(spa->spa_zio_taskq[ZIO_TYPE_FREE][ZIO_TASKQ_ISSUE],
+	    vdev_file_io_strategy, zio, 0, &zio->io_tqent);
 
 	return (ZIO_PIPELINE_STOP);
 }
