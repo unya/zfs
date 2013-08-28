@@ -56,6 +56,12 @@
 
 #ifndef NSEC_PER_SEC
 #define NSEC_PER_SEC 1000000000L
+#ifndef MSEC2NSEC
+#define MSEC2NSEC(m)    ((hrtime_t)(m) * (NANOSEC / MILLISEC))
+#endif
+
+#ifndef NSEC2MSEC
+#define NSEC2MSEC(n)    ((n) / (NANOSEC / MILLISEC))
 #endif
 
 extern hrtime_t gethrtime(void);
