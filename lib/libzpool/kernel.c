@@ -1110,6 +1110,12 @@ crgetuid(cred_t *cr)
 	return (0);
 }
 
+uid_t
+crgetruid(cred_t *cr)
+{
+	return (0);
+}
+
 gid_t
 crgetgid(cred_t *cr)
 {
