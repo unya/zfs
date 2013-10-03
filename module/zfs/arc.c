@@ -233,6 +233,7 @@ typedef struct arc_state {
 	uint64_t arcs_lsize[ARC_BUFC_NUMTYPES];	/* amount of evictable data */
 	uint64_t arcs_size;	/* total amount of data in this state */
 	kmutex_t arcs_mtx;
+	arc_state_type_t arcs_state;
 } arc_state_t;
 
 /* The 6 states: */
@@ -535,6 +536,11 @@ struct arc_buf_hdr {
 
 	/* updated atomically */
 	clock_t			b_arc_access;
+	uint32_t		b_mru_hits;
+	uint32_t		b_mru_ghost_hits;
+	uint32_t		b_mfu_hits;
+	uint32_t		b_mfu_ghost_hits;
+	uint32_t		b_l2_hits;
 
 	/* self protecting */
 	refcount_t		b_refcnt;
@@ -710,7 +716,8 @@ struct l2arc_buf_hdr {
 	/* compression applied to buffer data */
 	enum zio_compress	b_compress;
 	/* real alloc'd buffer size depending on b_compress applied */
-	int			b_asize;
+	uint32_t		b_asize;
+	uint32_t		b_hits;
 	/* temporary buffer holder for in-flight compressed data */
 	void			*b_tmp_cdata;
 };
@@ -1139,6 +1146,54 @@ remove_reference(arc_buf_hdr_t *ab, kmutex_t *hash_lock, void *tag)
 }
 
 /*
+ * Returns detailed information about a specific arc buffer.  When the
+ * state_index argument is set the function will calculate the arc header
+ * list position for its arc state.  Since this requires a linear traversal
+ * callers are strongly encourage not to do this.  However, it can be helpful
+ * for targeted analysis so the functionality is provided.
+ */
+void
+arc_buf_info(arc_buf_t *ab, arc_buf_info_t *abi, int state_index)
+{
+	arc_buf_hdr_t *hdr = ab->b_hdr;
+	arc_state_t *state = hdr->b_state;
+
+	memset(abi, 0, sizeof(arc_buf_info_t));
+	abi->abi_flags = hdr->b_flags;
+	abi->abi_datacnt = hdr->b_datacnt;
+	abi->abi_state_type = state ? state->arcs_state : ARC_STATE_ANON;
+	abi->abi_state_contents = hdr->b_type;
+	abi->abi_state_index = -1;
+	abi->abi_size = hdr->b_size;
+	abi->abi_access = hdr->b_arc_access;
+	abi->abi_mru_hits = hdr->b_mru_hits;
+	abi->abi_mru_ghost_hits = hdr->b_mru_ghost_hits;
+	abi->abi_mfu_hits = hdr->b_mfu_hits;
+	abi->abi_mfu_ghost_hits = hdr->b_mfu_ghost_hits;
+	abi->abi_holds = refcount_count(&hdr->b_refcnt);
+
+	if (hdr->b_l2hdr) {
+		abi->abi_l2arc_dattr = hdr->b_l2hdr->b_daddr;
+		abi->abi_l2arc_asize = hdr->b_l2hdr->b_asize;
+		abi->abi_l2arc_compress = hdr->b_l2hdr->b_compress;
+		abi->abi_l2arc_hits = hdr->b_l2hdr->b_hits;
+	}
+
+	if (state && state_index && list_link_active(&hdr->b_arc_node)) {
+		list_t *list = &state->arcs_list[hdr->b_type];
+		arc_buf_hdr_t *h;
+
+		mutex_enter(&state->arcs_mtx);
+		for (h = list_head(list); h != NULL; h = list_next(list, h)) {
+			abi->abi_state_index++;
+			if (h == hdr)
+				break;
+		}
+		mutex_exit(&state->arcs_mtx);
+	}
+}
+
+/*
  * Move the supplied buffer to the indicated state.  The mutex
  * for the buffer must be held by the caller.
  */
@@ -1299,6 +1354,11 @@ arc_buf_alloc(spa_t *spa, int size, void *tag, arc_buf_contents_t type)
 	hdr->b_spa = spa_load_guid(spa);
 	hdr->b_state = arc_anon;
 	hdr->b_arc_access = 0;
+	hdr->b_mru_hits = 0;
+	hdr->b_mru_ghost_hits = 0;
+	hdr->b_mfu_hits = 0;
+	hdr->b_mfu_ghost_hits = 0;
+	hdr->b_l2_hits = 0;
 	buf = kmem_cache_alloc(buf_cache, KM_PUSHPAGE);
 	buf->b_hdr = hdr;
 	buf->b_data = NULL;
@@ -2673,6 +2733,7 @@ arc_access(arc_buf_hdr_t *buf, kmutex_t *hash_lock)
 				ASSERT(list_link_active(&buf->b_arc_node));
 			} else {
 				buf->b_flags &= ~ARC_PREFETCH;
+				atomic_inc_32(&buf->b_mru_hits);
 				ARCSTAT_BUMP(arcstat_mru_hits);
 			}
 			buf->b_arc_access = now;
@@ -2694,6 +2755,7 @@ arc_access(arc_buf_hdr_t *buf, kmutex_t *hash_lock)
 			DTRACE_PROBE1(new_state__mfu, arc_buf_hdr_t *, buf);
 			arc_change_state(arc_mfu, buf, hash_lock);
 		}
+		atomic_inc_32(&buf->b_mru_hits);
 		ARCSTAT_BUMP(arcstat_mru_hits);
 	} else if (buf->b_state == arc_mru_ghost) {
 		arc_state_t	*new_state;
@@ -2716,6 +2778,7 @@ arc_access(arc_buf_hdr_t *buf, kmutex_t *hash_lock)
 		buf->b_arc_access = ddi_get_lbolt();
 		arc_change_state(new_state, buf, hash_lock);
 
+		atomic_inc_32(&buf->b_mru_ghost_hits);
 		ARCSTAT_BUMP(arcstat_mru_ghost_hits);
 	} else if (buf->b_state == arc_mfu) {
 		/*
@@ -2731,6 +2794,7 @@ arc_access(arc_buf_hdr_t *buf, kmutex_t *hash_lock)
 			ASSERT(refcount_count(&buf->b_refcnt) == 0);
 			ASSERT(list_link_active(&buf->b_arc_node));
 		}
+		atomic_inc_32(&buf->b_mfu_hits);
 		ARCSTAT_BUMP(arcstat_mfu_hits);
 		buf->b_arc_access = ddi_get_lbolt();
 	} else if (buf->b_state == arc_mfu_ghost) {
@@ -2754,6 +2818,7 @@ arc_access(arc_buf_hdr_t *buf, kmutex_t *hash_lock)
 		DTRACE_PROBE1(new_state__mfu, arc_buf_hdr_t *, buf);
 		arc_change_state(new_state, buf, hash_lock);
 
+		atomic_inc_32(&buf->b_mfu_ghost_hits);
 		ARCSTAT_BUMP(arcstat_mfu_ghost_hits);
 	} else if (buf->b_state == arc_l2c_only) {
 		/*
@@ -3137,6 +3202,7 @@ top:
 
 				DTRACE_PROBE1(l2arc__hit, arc_buf_hdr_t *, hdr);
 				ARCSTAT_BUMP(arcstat_l2_hits);
+				atomic_inc_32(&hdr->b_l2hdr->b_hits);
 
 				cb = kmem_zalloc(sizeof (l2arc_read_callback_t),
 				    KM_PUSHPAGE);
@@ -3472,6 +3538,11 @@ arc_release(arc_buf_t *buf, void *tag)
 		nhdr->b_buf = buf;
 		nhdr->b_state = arc_anon;
 		nhdr->b_arc_access = 0;
+		nhdr->b_mru_hits = 0;
+		nhdr->b_mru_ghost_hits = 0;
+		nhdr->b_mfu_hits = 0;
+		nhdr->b_mfu_ghost_hits = 0;
+		nhdr->b_l2_hits = 0;
 		nhdr->b_flags = flags & ARC_L2_WRITING;
 		nhdr->b_l2hdr = NULL;
 		nhdr->b_datacnt = 1;
@@ -3488,6 +3559,11 @@ arc_release(arc_buf_t *buf, void *tag)
 		if (hdr->b_state != arc_anon)
 			arc_change_state(arc_anon, hdr, hash_lock);
 		hdr->b_arc_access = 0;
+		hdr->b_mru_hits = 0;
+		hdr->b_mru_ghost_hits = 0;
+		hdr->b_mfu_hits = 0;
+		hdr->b_mfu_ghost_hits = 0;
+		hdr->b_l2_hits = 0;
 		if (hash_lock)
 			mutex_exit(hash_lock);
 
@@ -3906,6 +3982,13 @@ arc_init(void)
 	    sizeof (arc_buf_hdr_t), offsetof(arc_buf_hdr_t, b_arc_node));
 	list_create(&arc_l2c_only->arcs_list[ARC_BUFC_DATA],
 	    sizeof (arc_buf_hdr_t), offsetof(arc_buf_hdr_t, b_arc_node));
+
+	arc_anon->arcs_state = ARC_STATE_ANON;
+	arc_mru->arcs_state = ARC_STATE_MRU;
+	arc_mru_ghost->arcs_state = ARC_STATE_MRU_GHOST;
+	arc_mfu->arcs_state = ARC_STATE_MFU;
+	arc_mfu_ghost->arcs_state = ARC_STATE_MFU_GHOST;
+	arc_l2c_only->arcs_state = ARC_STATE_L2C_ONLY;
 
 	buf_init();
 
@@ -4792,6 +4875,7 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz,
 			l2hdr->b_compress = ZIO_COMPRESS_OFF;
 			l2hdr->b_asize = ab->b_size;
 			l2hdr->b_tmp_cdata = ab->b_buf->b_data;
+			l2hdr->b_hits = 0;
 
 			buf_sz = ab->b_size;
 			ab->b_l2hdr = l2hdr;
@@ -5330,6 +5414,7 @@ l2arc_stop(void)
 #if defined(_KERNEL) && defined(HAVE_SPL)
 EXPORT_SYMBOL(arc_read);
 EXPORT_SYMBOL(arc_buf_remove_ref);
+EXPORT_SYMBOL(arc_buf_info);
 EXPORT_SYMBOL(arc_getbuf_func);
 EXPORT_SYMBOL(arc_add_prune_callback);
 EXPORT_SYMBOL(arc_remove_prune_callback);
