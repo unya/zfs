@@ -371,6 +371,39 @@ typedef struct zio_link {
 	list_node_t	zl_child_node;
 } zio_link_t;
 
+/*
+ * Used for TRIM kstat.
+ */
+typedef struct zio_trim_stats {
+	/*
+	 * Number of bytes successfully TRIMmed.
+	 */
+	kstat_named_t zio_trim_bytes;
+
+	/*
+	 * Number of successful TRIM requests.
+	 */
+	kstat_named_t zio_trim_success;
+
+	/*
+	 * Number of TRIM requests that failed because TRIM is not
+	 * supported.
+	 */
+	kstat_named_t zio_trim_unsupported;
+
+	/*
+	 * Number of TRIM requests that failed for other reasons.
+	 */
+	kstat_named_t zio_trim_failed;
+} zio_trim_stats_t;
+
+extern zio_trim_stats_t zio_trim_stats;
+
+#define ZIO_TRIM_STAT_INCR(stat, val) \
+	atomic_add_64(&zio_trim_stats.stat.value.ui64, (val));
+#define ZIO_TRIM_STAT_BUMP(stat) \
+	ZIO_TRIM_STAT_INCR(stat, 1);
+
 struct zio {
 	/* Core information about this I/O */
 	zbookmark_t	io_bookmark;
@@ -444,6 +477,9 @@ struct zio {
 
 	/* Taskq dispatching state */
 	taskq_ent_t	io_tqent;
+
+	avl_node_t	io_trim_node;
+	list_node_t	io_trim_link;
 };
 
 extern zio_t *zio_null(zio_t *pio, spa_t *spa, vdev_t *vd,
@@ -489,12 +525,14 @@ extern zio_t *zio_write_phys(zio_t *pio, vdev_t *vd, uint64_t offset,
     enum zio_flag flags, boolean_t labels);
 
 extern zio_t *zio_free_sync(zio_t *pio, spa_t *spa, uint64_t txg,
-    const blkptr_t *bp, enum zio_flag flags);
+    const blkptr_t *bp, uint64_t size, enum zio_flag flags);
 
 extern int zio_alloc_zil(spa_t *spa, uint64_t txg, blkptr_t *new_bp,
     uint64_t size, boolean_t use_slog);
 extern void zio_free_zil(spa_t *spa, uint64_t txg, blkptr_t *bp);
 extern void zio_flush(zio_t *zio, vdev_t *vd);
+extern zio_t *zio_trim(zio_t *zio, spa_t *spa, vdev_t *vd,
+    uint64_t offset, uint64_t size, enum zio_flag flags);
 extern void zio_shrink(zio_t *zio, uint64_t size);
 
 extern int zio_wait(zio_t *zio);

@@ -30,6 +30,10 @@
 #include_next <sys/time.h>
 #include <sys/types.h>
 
+#ifndef TIME_MAX
+#define TIME_MAX LLONG_MAX
+#endif
+
 #ifndef SEC
 #define SEC		1
 #endif
@@ -50,6 +54,9 @@
 #define NSEC_PER_USEC	1000L
 #endif
 
+#ifndef NSEC_PER_SEC
+#define NSEC_PER_SEC 1000000000L
+#endif
 #ifndef MSEC2NSEC
 #define MSEC2NSEC(m)    ((hrtime_t)(m) * (NANOSEC / MILLISEC))
 #endif
