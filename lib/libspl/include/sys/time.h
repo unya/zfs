@@ -56,6 +56,7 @@
 
 #ifndef NSEC_PER_SEC
 #define NSEC_PER_SEC 1000000000L
+#endif
 #ifndef MSEC2NSEC
 #define MSEC2NSEC(m)    ((hrtime_t)(m) * (NANOSEC / MILLISEC))
 #endif
